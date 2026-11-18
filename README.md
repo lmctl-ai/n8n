@@ -1,5 +1,7 @@
 # Independent n8n-style workflows in LMScript and LMCode
 
+[![LMScript, LMCode, Go, and lmmock CI](https://github.com/lmctl-ai/n8n/actions/workflows/ci.yml/badge.svg)](https://github.com/lmctl-ai/n8n/actions/workflows/ci.yml)
+
 This repository is an independent, from-scratch workflow runtime. It uses [LMScript](https://www.lmscript.io/lmscript/) for validation and orchestration. It uses [LMCode](https://www.lmscript.io/lmcode/) for typed graph execution. A small Go host built with [lmcode-go](https://github.com/lmctl-ai/lmcode-go) supplies bounded JSON HTTP transport.
 
 This is not an n8n fork. It contains no n8n implementation code. Neutral connector specifications use public provider contracts. Workflow JSON uses n8n-style nodes, connections, parameters, and credential references as data.
@@ -95,6 +97,22 @@ npm test
 ```
 
 The test suite needs no real credentials and no live provider access. lmmock chooses an ephemeral loopback port and closes after the test.
+
+## Integration coverage
+
+The main test command runs 63 LMScript-driven integration scenarios, in addition to the Go unit tests.
+
+| Suite | Scenarios | Coverage |
+| --- | ---: | --- |
+| `tests/validation-cases.lms` | 32 | Workflow and connector schemas, node identity, credential references, operations, expressions, graph shape, and malformed JSON |
+| `tests/runtime-cases.lms` | 26 | Literal and expression inputs, scalar types, credentials, provider responses, transport failures, graph cycles, and a nine-connector-node chain |
+| `test.lms` | 5 | Host and lmmock schema parity, missing credentials, CLI usage, missing base-URL overrides, and the original workflow smoke test |
+
+The reusable runtime cases include 98 explicit assertions. Each lmmock handler also checks the request path, content type, exact body fields, JSON scalar types, and values.
+
+## CI
+
+The public GitHub Actions workflow runs the complete test suite on both Ubuntu and macOS. It also runs Go vet and durable-memory validation. The workflow needs no repository secrets or live provider credentials.
 
 ## Run the example
 

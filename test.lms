@@ -4,7 +4,7 @@ let lmmock = "node_modules/@lmctl-ai/lmmock/bin/lmmock.js";
 let host = "./build/lmflow-host";
 
 fn run_ok(argv) {
-  let result = system(argv, {timeoutMs: 30000});
+  let result = system(argv, {timeoutMs: 120000});
   require(result.code == 0, "command failed: " + json_stringify(argv) + "\n" + result.stdout + result.stderr);
   return result;
 }
@@ -29,6 +29,34 @@ let invalid = system([
 require(invalid.code != 0, "missing credential control unexpectedly succeeded");
 require(contains(invalid.stderr, "connector node requires credentials"), "validation did not report the missing credential");
 println("PASS: invalid credential references stop before workflow execution");
+
+let no_arguments = system([node, lmscript, "src/run.lms"], {timeoutMs: 30000});
+require(no_arguments.code != 0 && contains(no_arguments.stderr, "usage: run.lms WORKFLOW.json CONNECTOR.json CREDENTIALS.json"), "missing CLI arguments were not rejected");
+println("PASS: missing CLI arguments produce usage diagnostics");
+
+mkdir(".build/no-override", true);
+require(write_file(".build/no-override/credentials.json", "{broken"), "could not create no-override fixture");
+let no_override = system([
+  "env",
+  "-u",
+  "LMFLOW_BASE_URL",
+  "-u",
+  "LMMOCK_URL",
+  node,
+  lmscript,
+  "src/run.lms",
+  "examples/telegram.workflow.json",
+  "connectors/telegram.json",
+  ".build/no-override/credentials.json"
+], {timeoutMs: 30000});
+require(no_override.code != 0 && contains(no_override.stderr, "invalid credentials JSON"), "missing base overrides caused the wrong failure");
+require(!contains(no_override.stderr, "args must be a list of strings"), "missing base overrides produced invalid host arguments");
+println("PASS: absent base URL overrides preserve valid host arguments");
+
+let validation = run_ok([node, lmscript, "tests/validation-cases.lms"]);
+print(validation.stdout);
+let runtime = run_ok([node, lmscript, "tests/runtime-cases.lms"]);
+print(runtime.stdout);
 
 let completed = run_ok([
   node,

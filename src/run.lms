@@ -9,7 +9,7 @@ flow.validate_all(workflow, connector);
 
 let host = env("LMFLOW_HOST") || "./build/lmflow-host";
 let host_args = ["--workflow", workflow_path, "--connector", connector_path, "--credentials", credentials_path];
-let base_override = env("LMFLOW_BASE_URL") || env("LMMOCK_URL");
+let base_override = env("LMFLOW_BASE_URL") || env("LMMOCK_URL") || "";
 if (base_override != "") {
   host_args = concat(host_args, ["--base-url", base_override]);
 }

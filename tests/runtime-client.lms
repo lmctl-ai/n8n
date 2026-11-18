@@ -1,0 +1,13 @@
+# Capture one real runtime invocation while preserving its output and exit code.
+# ARGV is CAPTURE.json followed by the command and its arguments.
+let capture_path = require(ARGV.get(0, null), "runtime capture path required");
+let command = slice(ARGV, 1);
+require(command.len() > 0, "runtime command required");
+let completed = system(command, {timeoutMs: 30000});
+require(write_json(capture_path, {
+  code: completed.code,
+  stdout: completed.stdout,
+  stderr: completed.stderr
+}), "cannot write runtime capture");
+print(completed.stdout);
+exit(completed.code);

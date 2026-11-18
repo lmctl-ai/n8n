@@ -1,0 +1,453 @@
+# Reusable runtime integration cases for the real src/run.lms workflow.
+# Run from the repository root with:
+#   node node_modules/@lmctl-ai/lmctl/bin/lmscript tests/runtime-cases.lms
+
+let node = env("NODE") || "node";
+let lmscript = "node_modules/@lmctl-ai/lmctl/bin/lmscript";
+let lmmock = "node_modules/@lmctl-ai/lmmock/bin/lmmock.js";
+let fixture_token = "123456:fixture-token";
+let bot_path = "/bot" + fixture_token;
+let source_workflow = read_json("examples/telegram.workflow.json");
+let source_connector = read_json("connectors/telegram.json");
+let source_credentials = read_json("tests/fixtures/credentials.json");
+
+# One compiled, configuration-driven mock is shared by every scenario. The
+# request index is process-local, so every lmmock exec starts with fresh state.
+mock = _lmcode_ schema="lmmock.schema.json";
+
+@runtime_case
+fn runtime_case(x: Exchange) -> void implements Handler {
+  let cfg = json_parse(config());
+  let steps = cfg.get("steps");
+  let index = x.increment("runtime-case:index") - 1;
+  if (index < 0 || index >= steps.len()) {
+    x.status(500);
+    x.json("{\"ok\":false,\"description\":\"runtime mock: unexpected extra request\"}");
+  } else {
+    let step = steps.at(index);
+    let expected = step.get("expectedBody");
+    let actual = json_parse(x.body());
+    let problem = "";
+    if (x.method() != "POST") { problem = "method"; }
+    if (x.path() != step.get("expectedPath").as_string()) { problem = "credential path"; }
+    if (x.header("Content-Type") != "application/json") { problem = "content type"; }
+    if (actual.kind() != "object") {
+      problem = "body type";
+    } else {
+      if (actual.keys().len() != expected.keys().len()) { problem = "body field count"; }
+      for (key in expected.keys()) {
+        if (!actual.has(key)) {
+          problem = "missing body field";
+        } else if (actual.get(key).kind() != expected.get(key).kind()) {
+          problem = "body field JSON type";
+        } else if (actual.get(key).to_json() != expected.get(key).to_json()) {
+          problem = "body field value";
+        }
+      }
+    }
+    if (problem != "") {
+      x.status(400);
+      x.json("{\"ok\":false,\"error_code\":400,\"description\":" + json_quote("runtime mock request assertion failed: " + problem) + "}");
+    } else if (step.get("disconnect").as_bool()) {
+      x.disconnect();
+    } else {
+      let payload = step.get("reply").to_json();
+      if (step.has("raw")) { payload = step.get("raw").as_string(); }
+      x.status(step.get("status").as_int());
+      x.json(payload);
+    }
+  }
+}
+
+route("POST", "/{rest...}", "runtime_case");
+end _lmcode_
+
+fn send_reply(chat_id, text) {
+  return {
+    ok: true,
+    result: {
+      message_id: 1001,
+      chat: {id: chat_id, type: "private"},
+      text: text
+    }
+  };
+}
+
+fn get_reply(id) {
+  return {ok: true, result: {id: id, type: "private", title: "Fixture Chat"}};
+}
+
+fn make_step(path, body, reply) {
+  return {
+    expectedPath: path,
+    expectedBody: body,
+    status: 200,
+    reply: reply,
+    disconnect: false
+  };
+}
+
+fn send_step(chat_id, text) {
+  return make_step(bot_path + "/sendMessage", {chat_id: chat_id, text: text}, send_reply(42, text));
+}
+
+fn get_step(chat_id) {
+  return make_step(bot_path + "/getChat", {chat_id: chat_id}, get_reply(chat_id));
+}
+
+fn default_steps() {
+  return [
+    send_step(41, "hello from an independent LMCode workflow"),
+    get_step(42)
+  ];
+}
+
+fn new_case(name) {
+  return {
+    name: name,
+    workflow: clone(source_workflow),
+    connector: clone(source_connector),
+    credentials: clone(source_credentials),
+    steps: [],
+    expectOk: true,
+    errorContains: "",
+    sanitize: true
+  };
+}
+
+fn single_send_case(name) {
+  let c = new_case(name);
+  c.workflow.nodes = [c.workflow.nodes[0], c.workflow.nodes[1]];
+  c.workflow.connections = {
+    "Manual Trigger": {main: [[{node: "Send Message", type: "main", index: 0}]]},
+    "Send Message": {main: [[]]}
+  };
+  c.workflow.nodes[0].parameters = {chat_id: 41, text: "single send"};
+  c.workflow.nodes[1].parameters.chatId = "={{ $json.chat_id }}";
+  c.workflow.nodes[1].parameters.text = "={{ $json.text }}";
+  c.steps = [send_step(41, "single send")];
+  return c;
+}
+
+fn failing_send_case(name, error_text) {
+  let c = single_send_case(name);
+  c.expectOk = false;
+  c.errorContains = error_text;
+  return c;
+}
+
+fn scalar_case(name, provider_field, value) {
+  let c = single_send_case(name);
+  c.workflow.nodes[0].parameters = {chat_id: 41, text: "fallback", scalar_value: value};
+  c.workflow.nodes[1].parameters.chatId = 41;
+  c.workflow.nodes[1].parameters.text = "fallback";
+  let expected = {chat_id: 41, text: "fallback"};
+  if (provider_field == "chat_id") {
+    c.workflow.nodes[1].parameters.chatId = "={{ $json.scalar_value }}";
+  } else {
+    c.workflow.nodes[1].parameters.text = "={{ $json.scalar_value }}";
+  }
+  expected[provider_field] = value;
+  c.steps = [make_step(bot_path + "/sendMessage", expected, send_reply(42, expected.text))];
+  return c;
+}
+
+# Structural JSON equality keeps final-response assertions independent of key order.
+fn json_equal(actual, expected) {
+  if (type(actual) != type(expected)) { return false; }
+  if (is_map(actual)) {
+    let actual_keys = keys(actual);
+    let expected_keys = keys(expected);
+    if (actual_keys.len() != expected_keys.len()) { return false; }
+    for (key in expected_keys) {
+      if (!has_key(actual, key) || !json_equal(actual[key], expected[key])) { return false; }
+    }
+    return true;
+  }
+  if (is_array(actual)) {
+    if (actual.len() != expected.len()) { return false; }
+    for (index in range(0, actual.len())) {
+      if (!json_equal(actual[index], expected[index])) { return false; }
+    }
+    return true;
+  }
+  return actual == expected;
+}
+
+fn run_case(c) {
+  let case_dir = ".build/runtime-cases/" + c.name;
+  mkdir(case_dir, true);
+  let workflow_path = case_dir + "/workflow.json";
+  let connector_path = case_dir + "/connector.json";
+  let credentials_path = case_dir + "/credentials.json";
+  let config_path = case_dir + "/mock-config.json";
+  let capture_path = case_dir + "/capture.json";
+  require(write_json(workflow_path, c.workflow), "cannot write workflow for " + c.name);
+  require(write_json(connector_path, c.connector), "cannot write connector for " + c.name);
+  require(write_json(credentials_path, c.credentials), "cannot write credentials for " + c.name);
+  require(write_json(config_path, {case: c.name, steps: c.steps}), "cannot write mock config for " + c.name);
+  require(write_json(capture_path, {code: null, stdout: "", stderr: ""}), "cannot initialize capture for " + c.name);
+
+  # lmmock exec injects LMMOCK_URL into src/run.lms and owns server cleanup.
+  let outcome = run_lmcode(mock, {
+    command: [
+      node,
+      lmmock,
+      "exec",
+      "--lmcode",
+      "$DSLFILE",
+      "--config",
+      config_path,
+      "--",
+      node,
+      lmscript,
+      "tests/runtime-client.lms",
+      capture_path,
+      node,
+      lmscript,
+      "src/run.lms",
+      workflow_path,
+      connector_path,
+      credentials_path
+    ]
+  });
+  let outcome_text = json_stringify(outcome);
+  let captured = read_json(capture_path);
+  let diagnostic_text = outcome_text + "\n" + captured.stdout + captured.stderr;
+  let checks = 0;
+  let problems = [];
+
+  if (c.expectOk) {
+    checks = checks + 1;
+    if (!outcome.ok) {
+      problems = push(problems, "expected success: " + diagnostic_text);
+    } else {
+      checks = checks + 1;
+      if (outcome.result == null) {
+        problems = push(problems, "successful run had no process result");
+      } else {
+        checks = checks + 1;
+        let reply = json_parse_safe(outcome.result.stdout, null);
+        if (reply == null) {
+          problems = push(problems, "workflow stdout was not JSON: " + outcome.result.stdout);
+        } else {
+          checks = checks + 1;
+          if (!json_equal(reply, last(c.steps).reply)) {
+            problems = push(problems, "unexpected final reply: " + json_stringify(reply));
+          }
+        }
+      }
+    }
+  } else {
+    checks = checks + 1;
+    if (outcome.ok) {
+      problems = push(problems, "expected runtime failure but run succeeded");
+    }
+    checks = checks + 1;
+    if (!contains(diagnostic_text, c.errorContains)) {
+      problems = push(problems, "missing expected error " + json_stringify(c.errorContains) + ": " + diagnostic_text);
+    }
+  }
+
+  if (c.sanitize) {
+    checks = checks + 1;
+    if (contains(diagnostic_text, fixture_token)) {
+      problems = push(problems, "sanitized result contained the fixture credential token");
+    }
+  }
+
+  return {name: c.name, ok: problems.len() == 0, checks: checks, files: 5, problems: problems};
+}
+
+let cases = [];
+
+# Literal provider inputs bypass expressions and must arrive with their JSON types intact.
+let c = single_send_case("literal-inputs");
+c.workflow.nodes[1].parameters.chatId = 41;
+c.workflow.nodes[1].parameters.text = "literal text";
+c.steps = [send_step(41, "literal text")];
+cases = push(cases, c);
+
+# Each scalar kind is exercised independently to catch stringification or coercion.
+cases = push(cases, scalar_case("scalar-int-expression", "chat_id", 73));
+cases = push(cases, scalar_case("scalar-bool-expression", "text", true));
+cases = push(cases, scalar_case("scalar-float-expression", "text", 2.75));
+cases = push(cases, scalar_case("scalar-string-expression", "text", "007"));
+
+# The original two-request example propagates both manual and prior-response expressions.
+c = new_case("expression-propagation");
+c.steps = default_steps();
+cases = push(cases, c);
+
+# A second credential alias must control both request paths without changing the connector.
+c = new_case("alternate-credential-alias");
+let alternate_token = "654321:alternate-token";
+c.credentials["telegram-bot-alt"] = {token: alternate_token};
+c.workflow.nodes[1].credentials.telegramApi.id = "telegram-bot-alt";
+c.workflow.nodes[2].credentials.telegramApi.id = "telegram-bot-alt";
+c.steps = [
+  make_step("/bot" + alternate_token + "/sendMessage", {chat_id: 41, text: "hello from an independent LMCode workflow"}, send_reply(42, "hello from an independent LMCode workflow")),
+  make_step("/bot" + alternate_token + "/getChat", {chat_id: 42}, get_reply(42))
+];
+cases = push(cases, c);
+
+# Two different non-200 success statuses must both be accepted in one workflow.
+c = new_case("non-200-2xx-statuses");
+c.steps = default_steps();
+c.steps[0].status = 201;
+c.steps[1].status = 202;
+cases = push(cases, c);
+
+# Extra provider data must survive through expression resolution and the final result.
+c = new_case("extra-response-fields");
+c.steps = default_steps();
+c.steps[0].reply.providerExtra = {ignored: false, codes: [1, 2]};
+c.steps[1].reply.result.extra = {nullable: null, enabled: true, score: 9.5};
+cases = push(cases, c);
+
+# Credential validation and host lookup failures are separate paths.
+c = failing_send_case("missing-credential-alias", "missing credential type: telegramApi");
+c.workflow.nodes[1].credentials = {};
+cases = push(cases, c);
+
+c = failing_send_case("empty-credential-id", "credential reference requires an id");
+c.workflow.nodes[1].credentials.telegramApi.id = "";
+cases = push(cases, c);
+
+c = failing_send_case("missing-credential-field", "credential: missing or empty credential");
+c.credentials["telegram-bot"] = {};
+cases = push(cases, c);
+
+c = failing_send_case("empty-credential-field", "credential: missing or empty credential");
+c.credentials["telegram-bot"].token = "";
+cases = push(cases, c);
+
+# Non-2xx responses cover status fallback and provider error-field propagation.
+c = failing_send_case("provider-400", "connector HTTP status 400");
+c.steps[0].status = 400;
+c.steps[0].reply = {ok: false, error_code: 400};
+cases = push(cases, c);
+
+c = failing_send_case("provider-429", "provider rate limit");
+c.steps[0].status = 429;
+c.steps[0].reply = {ok: false, error_code: 429, description: "provider rate limit"};
+cases = push(cases, c);
+
+c = failing_send_case("provider-500", "provider internal error");
+c.steps[0].status = 500;
+c.steps[0].reply = {ok: false, error_code: 500, description: "provider internal error"};
+cases = push(cases, c);
+
+# A successful HTTP status does not override an explicit provider-level failure.
+c = failing_send_case("http-200-ok-false", "provider replied ok false");
+c.steps[0].reply = {ok: false, error_code: 200, description: "provider replied ok false"};
+cases = push(cases, c);
+
+c = failing_send_case("missing-success-field", "connector response was not successful");
+c.steps[0].reply = {result: {message_id: 1002}};
+cases = push(cases, c);
+
+c = failing_send_case("wrong-success-field-type", "connector response was not successful");
+c.steps[0].reply = {ok: "true", result: {message_id: 1003}};
+cases = push(cases, c);
+
+c = failing_send_case("malformed-json", "http_post_json: invalid JSON response");
+c.steps[0].raw = "{not-json";
+cases = push(cases, c);
+
+c = failing_send_case("disconnect", "http_post_json: request failed");
+c.steps[0].disconnect = true;
+cases = push(cases, c);
+
+# Invalid expression results must stop before any provider request.
+c = failing_send_case("missing-expression-path", "Json.get: missing key");
+c.workflow.nodes[1].parameters.chatId = "={{ $json.does_not_exist }}";
+c.steps = [];
+cases = push(cases, c);
+
+c = failing_send_case("object-expression-rejection", "connector inputs must be scalar JSON values");
+c.workflow.nodes[0].parameters.object_value = {nested: 41};
+c.workflow.nodes[1].parameters.chatId = "={{ $json.object_value }}";
+c.steps = [];
+cases = push(cases, c);
+
+c = failing_send_case("null-expression-rejection", "connector inputs must be scalar JSON values");
+c.workflow.nodes[0].parameters.null_value = null;
+c.workflow.nodes[1].parameters.chatId = "={{ $json.null_value }}";
+c.steps = [];
+cases = push(cases, c);
+
+# A reachable cycle through the manual trigger passes document validation but
+# must exhaust the real runtime's graph budget instead of looping indefinitely.
+c = new_case("graph-budget-cycle");
+c.expectOk = false;
+c.errorContains = "workflow graph exceeds its node budget";
+c.steps = default_steps();
+c.workflow.connections["Get Chat"] = {main: [[{node: "Manual Trigger", type: "main", index: 0}]]};
+cases = push(cases, c);
+
+# Nine alternating connector nodes exceed the example's depth and exercise both
+# response expression shapes, unique request bodies, and the linear node budget.
+c = new_case("extended-linear-chain");
+let manual = clone(c.workflow.nodes[0]);
+manual.parameters = {chat_id: 700};
+c.workflow.nodes = [manual];
+c.workflow.connections = {};
+c.steps = [];
+let previous_name = "Manual Trigger";
+let previous_kind = "manual";
+let chain_chat_id = 700;
+for (index in range(0, 9)) {
+  let is_send = index % 2 == 0;
+  let chain_node = clone(source_workflow.nodes[2]);
+  if (is_send) { chain_node = clone(source_workflow.nodes[1]); }
+  chain_node.id = "chain_" + str(index);
+  chain_node.name = "Chain " + str(index);
+  let chat_id = chain_chat_id;
+  if (previous_kind == "manual") {
+    chain_node.parameters.chatId = "={{ $json.chat_id }}";
+  } else if (previous_kind == "send") {
+    chain_node.parameters.chatId = "={{ $json.result.chat.id }}";
+  } else {
+    chain_node.parameters.chatId = "={{ $json.result.id }}";
+  }
+  if (is_send) {
+    chain_node.parameters.text = "chain text " + str(index);
+    c.steps = push(c.steps, send_step(chat_id, chain_node.parameters.text));
+    c.steps[index].reply = send_reply(chat_id + 1, chain_node.parameters.text);
+    c.steps[index].reply.result.message_id = 2000 + index;
+    chain_chat_id = chain_chat_id + 1;
+    previous_kind = "send";
+  } else {
+    c.steps = push(c.steps, get_step(chat_id));
+    c.steps[index].reply.result.title = "Chain " + str(index);
+    previous_kind = "get";
+  }
+  c.workflow.nodes = push(c.workflow.nodes, chain_node);
+  c.workflow.connections[previous_name] = {main: [[{node: chain_node.name, type: "main", index: 0}]]};
+  previous_name = chain_node.name;
+}
+c.workflow.connections[previous_name] = {main: [[]]};
+cases = push(cases, c);
+
+mkdir(".build/runtime-cases", true);
+let passed = 0;
+let total_checks = 0;
+let generated_files = 0;
+let failed_cases = [];
+for (runtime_case in cases) {
+  let completed = run_case(runtime_case);
+  total_checks = total_checks + completed.checks;
+  generated_files = generated_files + completed.files;
+  if (completed.ok) {
+    passed = passed + 1;
+    println("PASS " + completed.name + " (" + str(completed.checks) + " checks)");
+  } else {
+    failed_cases = push(failed_cases, completed.name);
+    println("FAIL " + completed.name + ": " + join(completed.problems, " | "));
+  }
+}
+
+println("SUMMARY cases=" + str(passed) + "/" + str(cases.len()) + " files=" + str(generated_files) + " checks=" + str(total_checks));
+require(failed_cases.len() == 0, "runtime integration cases failed: " + join(failed_cases, ", "));
+println("PASS: all reusable runtime integration cases completed");

@@ -57,4 +57,10 @@ Add these capabilities through reviewed contracts. Do not describe the MVP as a 
 
 On 2026-11-18, npm test passed locally. This included LMScript static checks, Go unit tests, host build, schema and registry parity, a missing-credential control, and the complete Telegram workflow through lmmock.
 
-The integration path ran manual trigger, sendMessage, expression propagation, and getChat. No live provider or real credential was used.
+The expanded suite runs 63 LMScript-driven integration scenarios. There are 32 validation cases, 26 reusable runtime cases, and five smoke or lifecycle scenarios. The reusable runtime cases have 98 explicit assertions, plus request assertions in every mock handler.
+
+The runtime cases cover literal and expression inputs, scalar JSON types, alternate credential aliases, missing credentials, successful and failing HTTP statuses, provider error envelopes, malformed responses, disconnects, invalid expression results, graph cycles, and a nine-connector-node chain. Generated fixtures stay under .build and use synthetic credentials.
+
+The expansion exposed and fixed an argument-construction bug in src/run.lms. Missing LMFLOW_BASE_URL and LMMOCK_URL values now produce an empty override and do not add a null host argument. A regression test removes both variables and checks that malformed credentials reach the expected host validation error.
+
+No live provider or real credential was used.

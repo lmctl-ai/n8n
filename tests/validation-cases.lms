@@ -1,0 +1,231 @@
+let node = env("NODE") || "node";
+let lmscript = "node_modules/@lmctl-ai/lmctl/bin/lmscript";
+let case_root = ".build/validation-cases";
+let stats = {passed: 0};
+
+# Keep every invocation off the network, including a case that escapes validation.
+set_env("LMFLOW_BASE_URL", "http://127.0.0.1:9");
+
+fn fresh_workflow() {
+  return read_json("examples/telegram.workflow.json");
+}
+
+fn fresh_connector() {
+  return read_json("connectors/telegram.json");
+}
+
+fn fresh_credentials() {
+  return read_json("tests/fixtures/credentials.json");
+}
+
+fn run_text_case(slug, workflow_text, connector_text, credentials_text, expected) {
+  let directory = path_join(case_root, slug);
+  mkdir(directory, true);
+  let workflow_path = path_join(directory, "workflow.json");
+  let connector_path = path_join(directory, "connector.json");
+  let credentials_path = path_join(directory, "credentials.json");
+  require(write_file(workflow_path, workflow_text), "could not write " + workflow_path);
+  require(write_file(connector_path, connector_text), "could not write " + connector_path);
+  require(write_file(credentials_path, credentials_text), "could not write " + credentials_path);
+
+  let result = system([
+    node,
+    lmscript,
+    "src/run.lms",
+    workflow_path,
+    connector_path,
+    credentials_path
+  ], {timeoutMs: 30000});
+  let diagnostics = result.stdout + result.stderr;
+  require(result.code != null && result.code != 0,
+    "FAIL " + slug + ": expected a nonzero exit\n" + diagnostics);
+  require(contains(diagnostics, expected),
+    "FAIL " + slug + ": missing diagnostic substring " + json_stringify(expected) + "\n" + diagnostics);
+  stats.passed = stats.passed + 1;
+  println("PASS " + slug);
+}
+
+fn run_json_case(slug, workflow, connector, credentials, expected) {
+  run_text_case(
+    slug,
+    json_stringify(workflow, 2) + "\n",
+    json_stringify(connector, 2) + "\n",
+    json_stringify(credentials, 2) + "\n",
+    expected
+  );
+}
+
+fn workflow_case(slug, workflow, expected) {
+  run_json_case(slug, workflow, fresh_connector(), fresh_credentials(), expected);
+}
+
+fn connector_case(slug, connector, expected) {
+  run_json_case(slug, fresh_workflow(), connector, fresh_credentials(), expected);
+}
+
+fn credentials_case(slug, credentials, expected) {
+  run_json_case(slug, fresh_workflow(), fresh_connector(), credentials, expected);
+}
+
+fn truncated_json(path) {
+  let source = read_file(path);
+  return substr(source, 0, len(source) - 2);
+}
+
+# Workflow structure and node identity.
+let workflow = fresh_workflow();
+set(workflow, "nodes", []);
+workflow_case("empty-nodes", workflow, "workflow must contain nodes");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.0.type", "n8n-nodes-base.telegram");
+workflow_case("first-node-not-manual", workflow, "first node must be a manual trigger");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.type", "n8n-nodes-base.manualTrigger");
+workflow_case("multiple-manual-nodes", workflow, "only the first node can be a manual trigger");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.id", workflow.nodes[0].id);
+workflow_case("duplicate-node-id", workflow, "duplicate node id or name");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.name", workflow.nodes[0].name);
+workflow_case("duplicate-node-name", workflow, "duplicate node id or name");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.id", "send-message");
+workflow_case("invalid-node-id", workflow, "invalid node id: send-message");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.type", "example.unsupportedNode");
+workflow_case("unsupported-node-type", workflow, "unsupported node type: example.unsupportedNode");
+
+# Credential references on connector nodes.
+workflow = fresh_workflow();
+delete_key(workflow.nodes[1], "credentials");
+workflow_case("missing-credentials", workflow, "connector node requires credentials: Send Message");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.credentials", {
+  "otherApi": {"id": "telegram-bot", "name": "Wrong credential type"}
+});
+workflow_case("wrong-credential-type", workflow, "missing credential type: telegramApi");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.credentials.telegramApi.id", "");
+workflow_case("empty-credential-id", workflow, "credential reference requires an id");
+
+# Operation selection, required inputs, and expression syntax.
+workflow = fresh_workflow();
+set(workflow, "nodes.1.parameters.resource", "unknownResource");
+workflow_case("unknown-resource", workflow, "unknown connector operation: unknownResource/sendMessage");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.parameters.operation", "unknownOperation");
+workflow_case("unknown-operation", workflow, "unknown connector operation: message/unknownOperation");
+
+workflow = fresh_workflow();
+delete_key(workflow.nodes[1].parameters, "text");
+workflow_case("missing-required-parameter", workflow, "missing parameter: text");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.parameters.text", "={{ $json.text");
+workflow_case("malformed-expression", workflow, "unsupported expression: ={{ $json.text");
+
+workflow = fresh_workflow();
+set(workflow, "nodes.1.parameters.text", "={{ $node.text }}");
+workflow_case("unsupported-expression-root", workflow, "unsupported expression: ={{ $node.text }}");
+
+# Connection graph validation.
+workflow = fresh_workflow();
+set(workflow, ["connections", "Ghost Node"], {"main": [[]]});
+workflow_case("nonexistent-connection-source", workflow, "connection source does not exist: Ghost Node");
+
+workflow = fresh_workflow();
+set(workflow, "connections.Manual Trigger.main.0.0.node", "Missing Node");
+workflow_case("nonexistent-connection-target", workflow, "connection target does not exist: Missing Node");
+
+workflow = fresh_workflow();
+let branch_target = clone(workflow.connections["Manual Trigger"].main[0][0]);
+set(workflow, "connections.Manual Trigger.main", [[branch_target], [branch_target]]);
+workflow_case("multiple-main-branches", workflow, "only one main output branch is supported");
+
+workflow = fresh_workflow();
+let first_target = clone(workflow.connections["Manual Trigger"].main[0][0]);
+let second_target = clone(workflow.connections["Manual Trigger"].main[0][0]);
+set(workflow, "connections.Manual Trigger.main", [[first_target, second_target]]);
+workflow_case("multiple-targets", workflow, "only one outgoing connection is supported");
+
+workflow = fresh_workflow();
+set(workflow, "connections.Manual Trigger.main", [[]]);
+workflow_case("disconnected-node", workflow, "connector node needs one incoming connection: Send Message");
+
+workflow = fresh_workflow();
+set(workflow, "connections.Get Chat.main", [[{
+  "node": "Get Chat",
+  "type": "main",
+  "index": 0
+}]]);
+workflow_case("duplicate-incoming-connection", workflow, "connector node needs one incoming connection: Get Chat");
+
+workflow = fresh_workflow();
+delete_key(workflow.connections["Send Message"], "main");
+workflow_case("missing-main-group", workflow, "connection requires main output: Send Message");
+
+# Connector operation declarations and schema constraints.
+let connector = fresh_connector();
+set(connector, "operations", []);
+connector_case("empty-connector-operations", connector, "connector must declare an operation");
+
+connector = fresh_connector();
+set(connector, "operations.0.name", "send-message");
+connector_case("invalid-operation-name", connector, "invalid operation name");
+
+connector = fresh_connector();
+set(connector, "specVersion", 2);
+connector_case("invalid-spec-version", connector, "$.specVersion: expected one of [1]");
+
+connector = fresh_connector();
+set(connector, "operations.0.method", "GET");
+connector_case("invalid-operation-method", connector, "$.operations[0].method: expected one of [\"POST\"]");
+
+connector = fresh_connector();
+set(connector, "operations.0.path", "bot{token}/sendMessage");
+connector_case("invalid-operation-path", connector, "operation path must start with /");
+
+connector = fresh_connector();
+set(connector, "operations.0.path", "/bot/sendMessage");
+connector_case("missing-credential-placeholder", connector, "operation path must contain the credential placeholder");
+
+# Malformed JSON is derived from each fresh source document.
+run_text_case(
+  "malformed-workflow-json",
+  truncated_json("examples/telegram.workflow.json"),
+  read_file("connectors/telegram.json"),
+  read_file("tests/fixtures/credentials.json"),
+  "src/run.lms:6:16: Error in host function 'read_json': Expected ',' or '}' after property value in JSON"
+);
+
+run_text_case(
+  "malformed-connector-json",
+  read_file("examples/telegram.workflow.json"),
+  truncated_json("connectors/telegram.json"),
+  read_file("tests/fixtures/credentials.json"),
+  "src/run.lms:7:17: Error in host function 'read_json': Expected ',' or '}' after property value in JSON"
+);
+
+run_text_case(
+  "malformed-credentials-json",
+  read_file("examples/telegram.workflow.json"),
+  read_file("connectors/telegram.json"),
+  truncated_json("tests/fixtures/credentials.json"),
+  "invalid credentials JSON"
+);
+
+# The credentials fixture itself is validated before any HTTP request is made.
+let credentials = fresh_credentials();
+set(credentials, "telegram-bot.token", "");
+credentials_case("empty-credential-token", credentials, "credential: missing or empty credential");
+
+println("PASS: " + str(stats.passed) + " validation integration cases");

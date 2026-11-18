@@ -15,9 +15,13 @@ concurrency:
 
 jobs:
   test:
-    name: LMScript, LMCode, Go, and lmmock
-    runs-on: ubuntu-latest
+    name: LMScript, LMCode, Go, and lmmock (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
