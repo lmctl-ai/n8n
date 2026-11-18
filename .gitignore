@@ -1,0 +1,9 @@
+node_modules/
+build/
+.build/
+.npm-cache/
+.go-cache/
+coverage/
+*.log
+.env
+credentials.local.json

@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "nodes", "connections"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "type", "typeVersion", "parameters"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "minLength": 1 },
+          "typeVersion": { "type": "number" },
+          "parameters": { "type": "object" },
+          "credentials": { "type": "object" }
+        }
+      }
+    },
+    "connections": { "type": "object" },
+    "settings": { "type": "object" },
+    "pinData": { "type": "object" }
+  }
+}

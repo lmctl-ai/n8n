@@ -1,0 +1,42 @@
+mock = _lmcode_ schema="lmmock.schema.json";
+
+@send_message
+fn send_message(x: Exchange) -> void implements Handler {
+  let body = json_parse(x.body());
+  if (x.header("Content-Type") != "application/json" || body.get("chat_id").kind() != "int" || body.get("chat_id").as_int() != 41 || body.get("text").as_string() != "hello from an independent LMCode workflow") {
+    x.status(400);
+    x.json("{\"ok\":false,\"error_code\":400,\"description\":\"bad sendMessage fixture request\"}");
+  } else {
+    x.json("{\"ok\":true,\"result\":{\"message_id\":1001,\"chat\":{\"id\":42,\"type\":\"private\"},\"text\":\"hello from an independent LMCode workflow\"}}");
+  }
+}
+
+@get_chat
+fn get_chat(x: Exchange) -> void implements Handler {
+  let body = json_parse(x.body());
+  if (body.get("chat_id").kind() != "int" || body.get("chat_id").as_int() != 42) {
+    x.status(400);
+    x.json("{\"ok\":false,\"error_code\":400,\"description\":\"expression propagation failed\"}");
+  } else {
+    x.json("{\"ok\":true,\"result\":{\"id\":42,\"type\":\"private\",\"title\":\"Fixture Chat\"}}");
+  }
+}
+
+route("POST", "/bot123456:fixture-token/sendMessage", "send_message");
+route("POST", "/bot123456:fixture-token/getChat", "get_chat");
+end _lmcode_
+
+let result = run_lmcode(mock, {
+  command: concat([
+    "node",
+    "node_modules/@lmctl-ai/lmmock/bin/lmmock.js",
+    "exec",
+    "--lmcode",
+    "$DSLFILE",
+    "--"
+  ], ARGV)
+});
+require(result.ok, "mock workflow run failed");
+if (result.result != null) {
+  print(result.result.stdout);
+}

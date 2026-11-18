@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["specVersion", "name", "documentation", "baseUrl", "nodeType", "credentialType", "credentialField", "successField", "errorField", "operations"],
+  "properties": {
+    "specVersion": { "enum": [1] },
+    "name": { "type": "string", "minLength": 1 },
+    "documentation": { "type": "string", "minLength": 1 },
+    "baseUrl": { "type": "string", "minLength": 1 },
+    "nodeType": { "type": "string", "minLength": 1 },
+    "credentialType": { "type": "string", "minLength": 1 },
+    "credentialField": { "type": "string", "minLength": 1 },
+    "successField": { "type": "string", "minLength": 1 },
+    "errorField": { "type": "string", "minLength": 1 },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "resource", "nodeOperation", "method", "path", "parameters"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "resource": { "type": "string", "minLength": 1 },
+          "nodeOperation": { "type": "string", "minLength": 1 },
+          "method": { "enum": ["POST"] },
+          "path": { "type": "string", "minLength": 1 },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["nodeField", "required"],
+              "properties": {
+                "nodeField": { "type": "string", "minLength": 1 },
+                "required": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

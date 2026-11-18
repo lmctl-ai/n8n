@@ -1,0 +1,182 @@
+import "validate.lms";
+
+let workflow_path = require(ARGV.get(0, null), "usage: run.lms WORKFLOW.json CONNECTOR.json CREDENTIALS.json");
+let connector_path = require(ARGV.get(1, null), "connector specification path required");
+let credentials_path = require(ARGV.get(2, null), "credentials path required");
+let workflow = read_json(workflow_path);
+let connector = read_json(connector_path);
+flow.validate_all(workflow, connector);
+
+let host = env("LMFLOW_HOST") || "./build/lmflow-host";
+let host_args = ["--workflow", workflow_path, "--connector", connector_path, "--credentials", credentials_path];
+let base_override = env("LMFLOW_BASE_URL") || env("LMMOCK_URL");
+if (base_override != "") {
+  host_args = concat(host_args, ["--base-url", base_override]);
+}
+
+program = _lmcode_ schema="../internal/host/schema.json";
+
+fn find_node(nodes: Json, name: string) -> Json {
+  let found = json_parse("null");
+  for (index in range(0, nodes.len())) {
+    let node = nodes.at(index);
+    if (node.get("name").as_string() == name) {
+      found = node;
+    }
+  }
+  return found;
+}
+
+fn next_node(workflow: Json, name: string) -> string {
+  let next = "";
+  let connections = workflow.get("connections");
+  if (connections.has(name)) {
+    let groups = connections.get(name);
+    if (groups.has("main")) {
+      let branches = groups.get("main");
+      if (branches.len() > 0) {
+        let branch = branches.at(0);
+        if (branch.len() > 0) {
+          next = branch.at(0).get("node").as_string();
+        }
+      }
+    }
+  }
+  return next;
+}
+
+fn find_operation(spec: Json, resource: string, node_operation: string) -> Json {
+  let found = json_parse("null");
+  let operations = spec.get("operations");
+  for (index in range(0, operations.len())) {
+    let operation = operations.at(index);
+    if (operation.get("resource").as_string() == resource && operation.get("nodeOperation").as_string() == node_operation) {
+      found = operation;
+    }
+  }
+  return found;
+}
+
+fn resolve_reference(outputs: StrMap, previous: string, text: string) -> Json {
+  if (previous == "" || !outputs.has(previous)) {
+    workflow_fail("expression requires a previous node result");
+  }
+  let path = str_substr(text, 10, str_len(text) - 13);
+  let current = json_parse(outputs.get(previous));
+  while (path != "") {
+    let dot = str_find(path, ".");
+    let key = path;
+    if (dot >= 0) {
+      key = str_substr(path, 0, dot);
+    }
+    current = current.get(key);
+    if (dot < 0) {
+      path = "";
+    } else {
+      path = str_substr(path, dot + 1, str_len(path) - dot - 1);
+    }
+  }
+  return current;
+}
+
+fn resolve_value(outputs: StrMap, previous: string, value: Json) -> Json {
+  let resolved = value;
+  if (value.kind() == "string") {
+    let text = value.as_string();
+    if (str_starts_with(text, "={{ $json.") && str_ends_with(text, " }}")) {
+      resolved = resolve_reference(outputs, previous, text);
+    }
+  }
+  if (resolved.kind() == "array" || resolved.kind() == "object" || resolved.kind() == "null") {
+    workflow_fail("connector inputs must be scalar JSON values");
+  }
+  return resolved;
+}
+
+fn request_body(outputs: StrMap, previous: string, operation: Json, parameters: Json) -> Json {
+  let body = json_parse("{}");
+  let mappings = operation.get("parameters");
+  for (provider_field in mappings.keys()) {
+    let mapping = mappings.get(provider_field);
+    let node_field = mapping.get("nodeField").as_string();
+    if (parameters.has(node_field)) {
+      let value = resolve_value(outputs, previous, parameters.get(node_field));
+      body = json_put(body, provider_field, value);
+    } else if (mapping.get("required").as_bool()) {
+      workflow_fail("required connector parameter is missing: " + node_field);
+    }
+  }
+  return body;
+}
+
+let workflow_document = input("workflow");
+let spec = input("connector");
+let nodes = workflow_document.get("nodes");
+let outputs = str_map();
+let current = nodes.at(0).get("name").as_string();
+let previous = "";
+let remaining = nodes.len() + 1;
+
+while (current != "") {
+  remaining = remaining - 1;
+  if (remaining < 0) {
+    workflow_fail("workflow graph exceeds its node budget");
+  }
+  let node = find_node(nodes, current);
+  if (node.kind() == "null") {
+    workflow_fail("workflow node does not exist: " + current);
+  }
+
+  if (node.get("type").as_string() == "n8n-nodes-base.manualTrigger") {
+    outputs.set(current, node.get("parameters").to_json());
+  } else {
+    if (node.get("type").as_string() != spec.get("nodeType").as_string()) {
+      workflow_fail("unsupported workflow node");
+    }
+    let parameters = node.get("parameters");
+    let operation = find_operation(spec, parameters.get("resource").as_string(), parameters.get("operation").as_string());
+    if (operation.kind() == "null") {
+      workflow_fail("unknown connector operation");
+    }
+
+    let body = request_body(outputs, previous, operation, parameters);
+    let reference = node.get("credentials").get(spec.get("credentialType").as_string());
+    let token = credential(reference.get("id").as_string(), spec.get("credentialField").as_string());
+    let path = str_replace(operation.get("path").as_string(), "{token}", token);
+    let url = base_url(spec.get("baseUrl").as_string()) + path;
+    let response = http_post_json(url, body);
+    let reply = response.json();
+    let success_field = spec.get("successField").as_string();
+
+    if (response.status() < 200 || response.status() >= 300) {
+      let message = "connector HTTP status " + str(response.status());
+      let error_field = spec.get("errorField").as_string();
+      if (reply.has(error_field)) {
+        message = reply.get(error_field).as_string();
+      }
+      workflow_fail(message);
+    }
+    if (!reply.has(success_field) || reply.get(success_field).kind() != "bool" || !reply.get(success_field).as_bool()) {
+      let message = "connector response was not successful";
+      let error_field = spec.get("errorField").as_string();
+      if (reply.has(error_field)) {
+        message = reply.get(error_field).as_string();
+      }
+      workflow_fail(message);
+    }
+    outputs.set(current, reply.to_json());
+  }
+
+  previous = current;
+  current = next_node(workflow_document, current);
+}
+
+$return = json_parse(outputs.get(previous));
+end _lmcode_
+
+let result = run_lmcode(program, {
+  command: [host, "--lmcode", "$DSLFILE"],
+  args: host_args
+});
+require(result.ok, "workflow failed: " + json_stringify(result));
+println(json_stringify(result.result, 2));

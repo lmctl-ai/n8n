@@ -1,0 +1,38 @@
+{
+  "dsl.schema": 2,
+  "name": "lmflow_host_v1",
+  "types": {
+    "HttpResponse": {
+      "methods": {
+        "status": [
+          { "params": [], "returns": "int" }
+        ],
+        "json": [
+          { "params": [], "returns": "Json" }
+        ]
+      }
+    }
+  },
+  "functions": {
+    "input": [
+      { "params": ["string"], "returns": "Json" }
+    ],
+    "credential": [
+      { "params": ["string", "string"], "returns": "string" }
+    ],
+    "base_url": [
+      { "params": ["string"], "returns": "string" }
+    ],
+    "json_put": [
+      { "params": ["Json", "string", "Json"], "returns": "Json" }
+    ],
+    "http_post_json": [
+      { "params": ["string", "Json"], "returns": "HttpResponse" }
+    ],
+    "workflow_fail": [
+      { "params": ["string"], "returns": "void" }
+    ]
+  },
+  "context": {},
+  "result": { "type": "Json", "nullable": false }
+}

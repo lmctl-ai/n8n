@@ -1,0 +1,34 @@
+{
+  "specVersion": 1,
+  "name": "telegram",
+  "documentation": "https://core.telegram.org/bots/api",
+  "baseUrl": "https://api.telegram.org",
+  "nodeType": "n8n-nodes-base.telegram",
+  "credentialType": "telegramApi",
+  "credentialField": "token",
+  "successField": "ok",
+  "errorField": "description",
+  "operations": [
+    {
+      "name": "sendMessage",
+      "resource": "message",
+      "nodeOperation": "sendMessage",
+      "method": "POST",
+      "path": "/bot{token}/sendMessage",
+      "parameters": {
+        "chat_id": { "nodeField": "chatId", "required": true },
+        "text": { "nodeField": "text", "required": true }
+      }
+    },
+    {
+      "name": "getChat",
+      "resource": "chat",
+      "nodeOperation": "get",
+      "method": "POST",
+      "path": "/bot{token}/getChat",
+      "parameters": {
+        "chat_id": { "nodeField": "chatId", "required": true }
+      }
+    }
+  ]
+}

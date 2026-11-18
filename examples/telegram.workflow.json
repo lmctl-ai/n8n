@@ -1,0 +1,64 @@
+{
+  "name": "Telegram workflow on LMScript and LMCode",
+  "nodes": [
+    {
+      "id": "manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "chat_id": 41,
+        "text": "hello from an independent LMCode workflow"
+      }
+    },
+    {
+      "id": "send",
+      "name": "Send Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [220, 0],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": { "appendAttribution": false }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot",
+          "name": "Synthetic Telegram bot"
+        }
+      }
+    },
+    {
+      "id": "chat",
+      "name": "Get Chat",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [440, 0],
+      "parameters": {
+        "resource": "chat",
+        "operation": "get",
+        "chatId": "={{ $json.result.chat.id }}"
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot",
+          "name": "Synthetic Telegram bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Send Message", "type": "main", "index": 0 }]]
+    },
+    "Send Message": {
+      "main": [[{ "node": "Get Chat", "type": "main", "index": 0 }]]
+    },
+    "Get Chat": { "main": [[]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

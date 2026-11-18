@@ -1,0 +1,24 @@
+{
+  "name": "@lmctl-ai/n8n-lmcode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent n8n-style workflow runtime using LMScript and LMCode",
+  "license": "MIT",
+  "scripts": {
+    "build": "mkdir -p build && CGO_ENABLED=0 go build -trimpath -o build/lmflow-host ./cmd/lmflow-host",
+    "check": "lmscript --check src/run.lms && lmscript --check tests/telegram-mock.lms && lmscript --check test.lms",
+    "build:memory-index": "bash scripts/memory/run.sh index durable-memory",
+    "check:memory": "bash scripts/memory/run.sh check durable-memory",
+    "demo": "npm run build && lmscript tests/telegram-mock.lms node node_modules/@lmctl-ai/lmctl/bin/lmscript src/run.lms examples/telegram.workflow.json connectors/telegram.json tests/fixtures/credentials.json",
+    "test:unit": "go test ./...",
+    "test:integration": "npm run build && lmscript test.lms",
+    "test": "npm run check && npm run test:unit && npm run test:integration"
+  },
+  "devDependencies": {
+    "@lmctl-ai/lmctl": "0.2.454",
+    "@lmctl-ai/lmmock": "0.1.117"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

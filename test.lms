@@ -1,0 +1,46 @@
+let node = env("NODE") || "node";
+let lmscript = "node_modules/@lmctl-ai/lmctl/bin/lmscript";
+let lmmock = "node_modules/@lmctl-ai/lmmock/bin/lmmock.js";
+let host = "./build/lmflow-host";
+
+fn run_ok(argv) {
+  let result = system(argv, {timeoutMs: 30000});
+  require(result.code == 0, "command failed: " + json_stringify(argv) + "\n" + result.stdout + result.stderr);
+  return result;
+}
+
+let schema_result = run_ok([host, "--lmcode-schema", "--json"]);
+require(schema_result.stdout == read_file("internal/host/schema.json"), "host schema bytes drifted");
+
+let expected_signatures = run_ok([node, lmscript, "--lmcode-signatures", "internal/host/schema.json"]).stdout;
+let actual_signatures = run_ok([host, "--lmcode-signatures"]).stdout;
+require(actual_signatures == expected_signatures, "host registry signatures drifted");
+require(run_ok([node, lmmock, "schema"]).stdout == read_file("tests/lmmock.schema.json"), "lmmock schema bytes drifted");
+println("PASS: host and lmmock schemas match their registered contracts");
+
+let invalid = system([
+  node,
+  lmscript,
+  "src/run.lms",
+  "tests/fixtures/missing-credential.workflow.json",
+  "connectors/telegram.json",
+  "tests/fixtures/credentials.json"
+], {timeoutMs: 30000});
+require(invalid.code != 0, "missing credential control unexpectedly succeeded");
+require(contains(invalid.stderr, "connector node requires credentials"), "validation did not report the missing credential");
+println("PASS: invalid credential references stop before workflow execution");
+
+let completed = run_ok([
+  node,
+  lmscript,
+  "tests/telegram-mock.lms",
+  node,
+  lmscript,
+  "src/run.lms",
+  "examples/telegram.workflow.json",
+  "connectors/telegram.json",
+  "tests/fixtures/credentials.json"
+]);
+let response = json_parse(completed.stdout);
+require(response.ok && response.result.id == 42 && response.result.title == "Fixture Chat", "unexpected workflow response");
+println("PASS: manual trigger, Telegram sendMessage, expression propagation, and getChat completed through lmmock");

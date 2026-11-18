@@ -1,0 +1,102 @@
+package flow;
+
+fn validate_document(document, schema) {
+  let checked = json_validate(document, schema);
+  require(checked.ok, join(checked.errors, "\n"));
+}
+
+fn operation_for(connector, resource, node_operation) {
+  let found = null;
+  for (operation in connector.operations) {
+    if (operation.resource == resource && operation.nodeOperation == node_operation) {
+      found = operation;
+    }
+  }
+  return found;
+}
+
+fn validate_connector(connector) {
+  validate_document(connector, read_json("schema/connector-v1.schema.json"));
+  require(connector.operations.len() > 0, "connector must declare an operation");
+  let names = {};
+  for (operation in connector.operations) {
+    require(regex_test(operation.name, r"^[A-Za-z_][A-Za-z0-9_]*$"), "invalid operation name");
+    require(!names.has(operation.name), "duplicate operation: " + operation.name);
+    names[operation.name] = true;
+    require(starts_with(operation.path, "/"), "operation path must start with /");
+    require(contains(operation.path, "{" + connector.credentialField + "}"), "operation path must contain the credential placeholder");
+  }
+}
+
+fn validate_workflow(workflow, connector) {
+  validate_document(workflow, read_json("schema/workflow-v1.schema.json"));
+  require(workflow.nodes.len() > 0, "workflow must contain nodes");
+  require(workflow.nodes[0].type == "n8n-nodes-base.manualTrigger", "first node must be a manual trigger");
+
+  let ids = {};
+  let names = {};
+  let incoming = {};
+  for (node in workflow.nodes) {
+    require(regex_test(node.id, r"^[A-Za-z_][A-Za-z0-9_]*$"), "invalid node id: " + node.id);
+    require(!ids.has(node.id) && !names.has(node.name), "duplicate node id or name");
+    ids[node.id] = true;
+    names[node.name] = true;
+    incoming[node.name] = 0;
+
+    if (node.type == "n8n-nodes-base.manualTrigger") {
+      require(node.id == workflow.nodes[0].id, "only the first node can be a manual trigger");
+    } else {
+      require(node.type == connector.nodeType, "unsupported node type: " + node.type);
+      require(node.has("credentials"), "connector node requires credentials: " + node.name);
+      require(node.credentials.has(connector.credentialType), "missing credential type: " + connector.credentialType);
+      let reference = node.credentials[connector.credentialType];
+      require(reference.get("id", "") != "", "credential reference requires an id");
+
+      let parameters = node.parameters;
+      let resource = parameters.get("resource", "");
+      let node_operation = parameters.get("operation", "");
+      let operation = operation_for(connector, resource, node_operation);
+      require(operation != null, "unknown connector operation: " + resource + "/" + node_operation);
+
+      for (provider_field in operation.parameters) {
+        let mapping = operation.parameters[provider_field];
+        if (mapping.required) {
+          require(parameters.has(mapping.nodeField), "missing parameter: " + mapping.nodeField);
+        }
+        if (parameters.has(mapping.nodeField) && type(parameters[mapping.nodeField]) == "string") {
+          let value = parameters[mapping.nodeField];
+          if (contains(value, "={{")) {
+            require(regex_test(value, r"^=\{\{ \$json(\.[A-Za-z_][A-Za-z0-9_]*)+ \}\}$"), "unsupported expression: " + value);
+          }
+        }
+      }
+    }
+  }
+
+  for (source in workflow.connections) {
+    require(names.has(source), "connection source does not exist: " + source);
+    let groups = workflow.connections[source];
+    require(groups.has("main"), "connection requires main output: " + source);
+    let branches = groups.main;
+    require(branches.len() <= 1, "only one main output branch is supported");
+    if (branches.len() == 1) {
+      let branch = branches[0];
+      require(branch.len() <= 1, "only one outgoing connection is supported");
+      if (branch.len() == 1) {
+        let target = branch[0].get("node", "");
+        require(names.has(target), "connection target does not exist: " + target);
+        incoming[target] = incoming[target] + 1;
+      }
+    }
+  }
+
+  for (let index = 1; index < workflow.nodes.len(); index = index + 1) {
+    let node = workflow.nodes[index];
+    require(incoming[node.name] == 1, "connector node needs one incoming connection: " + node.name);
+  }
+}
+
+fn validate_all(workflow, connector) {
+  validate_connector(connector);
+  validate_workflow(workflow, connector);
+}
