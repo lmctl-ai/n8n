@@ -4,6 +4,13 @@
 
 This repository is an independent, from-scratch workflow runtime. It uses [LMScript](https://www.lmscript.io/lmscript/) for validation and orchestration. It uses [LMCode](https://www.lmscript.io/lmcode/) for typed graph execution. A small Go host built with [lmcode-go](https://github.com/lmctl-ai/lmcode-go) supplies bounded JSON HTTP transport.
 
+## Documentation
+
+- [Quick reference](https://www.lmctl.com/tools/n8n/)
+- [LLM skill](https://www.lmctl.com/tools/n8n/skill.html)
+- [Guide](https://www.lmctl.com/tools/n8n/guide.html)
+- [Reference](https://www.lmctl.com/tools/n8n/reference.html)
+
 This is not an n8n fork. It contains no n8n implementation code. Neutral connector specifications use public provider contracts. Workflow JSON uses n8n-style nodes, connections, parameters, and credential references as data.
 
 For the upstream n8n source, credential-storage research, and upstream-node integration tests, use [testfoss/n8n](https://github.com/testfoss/n8n). That repository intentionally retains the complete upstream project.
